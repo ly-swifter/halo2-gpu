@@ -4,15 +4,25 @@ use super::super::{
 };
 use super::Argument;
 use crate::plonk::evaluation::evaluate;
+use crate::poly::kzg::commitment::KZGCommitmentScheme;
 use crate::{
     arithmetic::{eval_polynomial, parallelize, CurveAffine, FieldExt},
     poly::{
-        commitment::{Blind, Params},
+        kzg::commitment::{commit_lagrange_gpu_sync, ParamsKZG,},
+        commitment::{Blind, Params, CommitmentScheme,},
         Coeff, EvaluationDomain, ExtendedLagrangeCoeff, LagrangeCoeff, Polynomial, ProverQuery,
-        Rotation,
+        Rotation, lagrange_to_coeff_gpu_sync,
     },
     transcript::{EncodedChallenge, TranscriptWrite},
+    
 };
+use halo2curves::pairing::Engine;
+use halo2curves::pasta::pallas::Scalar;
+use crate::helpers::SerdeCurveAffine;
+
+use crate::arithmetic::Group;
+
+
 use group::{
     ff::{BatchInvert, Field},
     Curve,
@@ -25,7 +35,11 @@ use std::{
     ops::{Mul, MulAssign},
 };
 
-#[derive(Debug)]
+use zk_gpu::threadpool::{Waiter, Worker};
+use std::sync::Arc;
+use std::fmt::Debug;
+
+#[derive(Debug, Clone)]
 pub(in crate::plonk) struct Permuted<C: CurveAffine> {
     compressed_input_expression: Polynomial<C::Scalar, LagrangeCoeff>,
     permuted_input_expression: Polynomial<C::Scalar, LagrangeCoeff>,
@@ -51,7 +65,242 @@ pub(in crate::plonk) struct Evaluated<C: CurveAffine> {
     constructed: Committed<C>,
 }
 
+pub(in crate::plonk) fn commit_values_gpu<
+    'a,
+    'params: 'a,
+    C,
+    P: Params<'params, C>+Send+Sync+'static,
+    F: FieldExt,
+>(
+    pool: &Worker,
+    w_domain: Arc<EvaluationDomain<C::Scalar>>,
+    w_params: Arc<P>,
+    permuted: Permuted<C>,
+) -> Waiter<(Permuted<C>, C, C)> 
+where
+    C: CurveAffine<ScalarExt = F>,
+    C::Curve: Mul<F, Output = C::Curve> + MulAssign<F>,
+{
+    let commit_values = |
+        values: Polynomial<C::Scalar, LagrangeCoeff>, 
+        w_domain: Arc<EvaluationDomain<C::Scalar>>,
+        w_params: Arc<P>, 
+        k: u32, | {
+        let poly = lagrange_to_coeff_gpu_sync(w_domain.clone(), values.clone());
+        //log::info!("lagrange_to_coeff in lookup's commit_permuted finished");
+
+        let blind = Blind::default();
+        let commitment= commit_lagrange_gpu_sync(w_params.get_g_lagrange(), values, k).unwrap().to_affine();
+        (poly, blind, commitment)
+    };
+
+    //let g_lagrange = Arc::new((*params.get_g_lagrange()).clone());
+    let k = w_params.k();
+
+    let w_params_1 = w_params.clone();
+    let w_params_2 = w_params.clone();
+
+    let ret = pool.compute(move || 
+    {
+        // Commit to permuted input expression
+        let (permuted_input_poly, permuted_input_blind, permuted_input_commitment) =
+            commit_values(permuted.permuted_input_expression.clone(), w_domain.clone(), w_params_1, k);
+
+        // Commit to permuted table expression
+        let (permuted_table_poly, permuted_table_blind, permuted_table_commitment) =
+            commit_values(permuted.permuted_table_expression.clone(), w_domain.clone(), w_params_2, k);
+        (Permuted {
+            compressed_input_expression: permuted.compressed_input_expression ,
+            permuted_input_expression: permuted.permuted_input_expression,
+            permuted_input_poly,
+            permuted_input_blind,
+            compressed_table_expression: permuted.compressed_table_expression,
+            permuted_table_expression: permuted.permuted_table_expression,
+            permuted_table_poly,
+            permuted_table_blind,
+        }, permuted_input_commitment, permuted_table_commitment)
+    });
+    ret
+}
+
+// pub(in crate::plonk) fn commit_values_gpu<
+//     'params,
+//     E: Engine<G1Affine=C, Scalar=G>+Debug,
+//     Scheme: CommitmentScheme<Curve = C>,
+//     C: CurveAffine<ScalarExt=G>,
+//     G: Group+halo2curves::FieldExt,
+// >(
+//     pool: &Worker,
+//     w_domain: Arc<EvaluationDomain<G>>,
+//     params: &'params Scheme::ParamsProver,
+//     permuted: Permuted<E::G1Affine>,
+// ) -> Waiter<(Permuted<E::G1Affine>, E::G1Affine, E::G1Affine)> 
+// where
+//     E::G1Affine: SerdeCurveAffine,
+//     E::G2Affine: SerdeCurveAffine,
+// {
+//     let mut commit_values = |
+//         values: Polynomial<<E::G1Affine as CurveAffine>::ScalarExt, LagrangeCoeff>, 
+//         w_domain: Arc<EvaluationDomain<G>>,
+//         g_lagrange: Arc<Vec<C>>, 
+//         k: u32, | {
+//         let poly = lagrange_to_coeff_gpu_sync(w_domain.clone(), values);
+//         //log::info!("lagrange_to_coeff in lookup's commit_permuted finished");
+
+//         let blind :Blind<G> = Blind::default();
+//         let commitment= commit_lagrange_gpu_sync::<E, Scheme, C, G>(g_lagrange, values, k).unwrap().to_affine();
+//         (poly, blind, commitment)
+//     };
+
+//     let g_lagrange = Arc::new(params.get_g_lagrange());
+//     let k = params.k();
+
+//     let ret = pool.compute(move || 
+//     {
+//         // Commit to permuted input expression
+//         let (permuted_input_poly, permuted_input_blind, permuted_input_commitment) =
+//             commit_values(permuted.permuted_input_expression.clone(), w_domain.clone(), g_lagrange.clone(), k);
+
+//         // Commit to permuted table expression
+//         let (permuted_table_poly, permuted_table_blind, permuted_table_commitment) =
+//             commit_values(permuted.permuted_table_expression.clone(), w_domain.clone(), g_lagrange.clone(), k);
+//         (Permuted {
+//             compressed_input_expression: permuted.compressed_input_expression ,
+//             permuted_input_expression: permuted.permuted_input_expression,
+//             permuted_input_poly,
+//             permuted_input_blind,
+//             compressed_table_expression: permuted.compressed_table_expression,
+//             permuted_table_expression: permuted.permuted_table_expression,
+//             permuted_table_poly,
+//             permuted_table_blind,
+//         }, permuted_input_commitment, permuted_table_commitment)
+//     });
+//     ret
+// }
+
 impl<F: FieldExt> Argument<F> {
+
+    // pub(in crate::plonk) fn commit_permuted_gpu<
+    //     'a,
+    //     'params: 'a,
+    //     En: Engine,
+    //     C: En::G1Affine,
+    //     P: Params<'params, En::G1Affine>+Send+Sync,
+    //     E: EncodedChallenge<En::G1Affine>,
+    //     R: RngCore,
+    //     T: TranscriptWrite<En::G1Affine, E>+Copy+Send+Sync,
+    // >(
+    //     &self,
+    //     pool: &Worker,
+    //     pk: &ProvingKey<En::G1Affine>,
+    //     params: &P,
+    //     domain: &EvaluationDomain<En::G1Affine::Scalar>,
+    //     theta: ChallengeTheta<En::G1Affine>,
+    //     advice_values: &'a [Polynomial<En::Scalar, LagrangeCoeff>],
+    //     fixed_values: &'a [Polynomial<En::Scalar, LagrangeCoeff>],
+    //     instance_values: &'a [Polynomial<En::Scalar, LagrangeCoeff>],
+    //     challenges: &'a [En::Scalar],
+    //     mut rng: R,
+    // ) -> Result<Waiter<Result<(Permuted<En::G1Affine>, En::G1Affine, En::G1Affine), Error>>, Error>
+    // where
+    //     En::G1Affine: SerdeCurveAffine<ScalarExt = F>,
+    //     En::G2Affine: SerdeCurveAffine<ScalarExt = F>,
+    //     C: CurveAffine<ScalarExt = F>,
+    //     C::Curve: Mul<F, Output = C::Curve> + MulAssign<F>,
+    // {
+    //     let w_domain = Arc::new(pk.vk.domain.clone());
+    //     let w_param = Arc::new(params.clone() as ParamsKZG<_>);
+    //     // Closure to get values of expressions and compress them
+    //     let compress_expressions = |expressions: &[Expression<En::Scalar>]| {
+    //         let compressed_expression = expressions
+    //             .iter()
+    //             .map(|expression| {
+    //                 domain.lagrange_from_vec(evaluate(
+    //                     expression,
+    //                     params.n() as usize,
+    //                     1,
+    //                     fixed_values,
+    //                     advice_values,
+    //                     instance_values,
+    //                     challenges,
+    //                 ))
+    //             })
+    //             .fold(domain.empty_lagrange(), |acc, expression| {
+    //                 acc * *theta + &expression
+    //             });
+    //         compressed_expression
+    //     };
+
+    //     // Get values of input expressions involved in the lookup and compress them
+    //     let compressed_input_expression = compress_expressions(self.input_expressions.as_slice());
+
+    //     // Get values of table expressions involved in the lookup and compress them
+    //     let compressed_table_expression = compress_expressions(&self.table_expressions);
+
+    //     // Permute compressed (InputExpression, TableExpression) pair
+    //     let (permuted_input_expression, permuted_table_expression) = permute_expression_pair(
+    //         pk,
+    //         params,
+    //         domain,
+    //         &mut rng,
+    //         &compressed_input_expression,
+    //         &compressed_table_expression,
+    //     )?;
+        
+    //     let mut commit_values_gpu = |values: &Polynomial<En::Scalar, LagrangeCoeff>| {
+    //         let poly = lagrange_to_coeff_gpu_sync(w_domain.clone(), values.clone());
+    //         //log::info!("lagrange_to_coeff in lookup's commit_permuted finished");
+
+    //         let blind = Blind::default();
+    //         let commitment= commit_lagrange_gpu_sync(w_param.clone(), values.clone(), blind).unwrap().to_affine();
+    //         (poly, blind, commitment)
+    //     };
+
+    //     let ret = pool.compute(move || 
+    //     {
+    //         // Commit to permuted input expression
+    //         let (permuted_input_poly, permuted_input_blind, permuted_input_commitment) =
+    //         commit_values_gpu(&permuted_input_expression);
+
+    //         // Commit to permuted table expression
+    //         let (permuted_table_poly, permuted_table_blind, permuted_table_commitment) =
+    //             commit_values_gpu(&permuted_table_expression);
+    //         Ok((Permuted {
+    //             compressed_input_expression,
+    //             permuted_input_expression,
+    //             permuted_input_poly,
+    //             permuted_input_blind,
+    //             compressed_table_expression,
+    //             permuted_table_expression,
+    //             permuted_table_poly,
+    //             permuted_table_blind,
+    //         }, permuted_input_commitment, permuted_table_commitment))
+    //     });
+    //     Ok(ret)
+        
+    // }
+
+    pub(in crate::plonk) fn write_point_permuted<
+            C,
+            E: EncodedChallenge<C>,
+            T: TranscriptWrite<C, E>,
+        >(
+        &self,
+        permuted_input_commitment: C,
+        permuted_table_commitment: C,
+        transcript: &mut T,)
+    -> Result<(), Error>
+    where
+        C: CurveAffine<ScalarExt = F>,
+        C::Curve: Mul<F, Output = C::Curve> + MulAssign<F>,
+    {
+        // Hash permuted input commitment
+        transcript.write_point(permuted_input_commitment)?;
+
+        // Hash permuted table commitment
+        transcript.write_point(permuted_table_commitment)?;
+        Ok(())
+    }
     /// Given a Lookup with input expressions [A_0, A_1, ..., A_{m-1}] and table expressions
     /// [S_0, S_1, ..., S_{m-1}], this method
     /// - constructs A_compressed = \theta^{m-1} A_0 + theta^{m-2} A_1 + ... + \theta A_{m-2} + A_{m-1}
@@ -126,6 +375,8 @@ impl<F: FieldExt> Argument<F> {
         // Closure to construct commitment to vector of values
         let mut commit_values = |values: &Polynomial<C::Scalar, LagrangeCoeff>| {
             let poly = pk.vk.domain.lagrange_to_coeff(values.clone());
+            //log::info!("lagrange_to_coeff in lookup's commit_permuted finished");
+
             let blind = Blind(C::Scalar::random(&mut rng));
             let commitment = params.commit_lagrange(values, blind).to_affine();
             (poly, blind, commitment)
@@ -156,7 +407,82 @@ impl<F: FieldExt> Argument<F> {
             permuted_table_blind,
         })
     }
+
+    pub(in crate::plonk) fn commit_permuted_partial<
+        'a,
+        'params: 'a,
+        C,
+        P: Params<'params, C>,
+        E: EncodedChallenge<C>,
+        R: RngCore,
+        T: TranscriptWrite<C, E>,
+    >(
+        &self,
+        pk: &ProvingKey<C>,
+        params: &P,
+        domain: &EvaluationDomain<C::Scalar>,
+        theta: ChallengeTheta<C>,
+        advice_values: &'a [Polynomial<C::Scalar, LagrangeCoeff>],
+        fixed_values: &'a [Polynomial<C::Scalar, LagrangeCoeff>],
+        instance_values: &'a [Polynomial<C::Scalar, LagrangeCoeff>],
+        challenges: &'a [C::Scalar],
+        mut rng: R,
+        transcript: &mut T,
+    ) -> Result<Permuted<C>, Error>
+    where
+        C: CurveAffine<ScalarExt = F>,
+        C::Curve: Mul<F, Output = C::Curve> + MulAssign<F>,
+    {
+        // Closure to get values of expressions and compress them
+        let compress_expressions = |expressions: &[Expression<C::Scalar>]| {
+            let compressed_expression = expressions
+                .iter()
+                .map(|expression| {
+                    pk.vk.domain.lagrange_from_vec(evaluate(
+                        expression,
+                        params.n() as usize,
+                        1,
+                        fixed_values,
+                        advice_values,
+                        instance_values,
+                        challenges,
+                    ))
+                })
+                .fold(domain.empty_lagrange(), |acc, expression| {
+                    acc * *theta + &expression
+                });
+            compressed_expression
+        };
+
+        // Get values of input expressions involved in the lookup and compress them
+        let compressed_input_expression = compress_expressions(&self.input_expressions);
+
+        // Get values of table expressions involved in the lookup and compress them
+        let compressed_table_expression = compress_expressions(&self.table_expressions);
+
+        // Permute compressed (InputExpression, TableExpression) pair
+        let (permuted_input_expression, permuted_table_expression) = permute_expression_pair(
+            pk,
+            params,
+            domain,
+            &mut rng,
+            &compressed_input_expression,
+            &compressed_table_expression,
+        )?;
+
+        Ok(Permuted {
+            compressed_input_expression,
+            permuted_input_expression,
+            permuted_input_poly: domain.empty_coeff(),
+            permuted_input_blind: Blind(C::Scalar::random(&mut rng)),
+            compressed_table_expression,
+            permuted_table_expression,
+            permuted_table_poly: domain.empty_coeff(),
+            permuted_table_blind: Blind(C::Scalar::random(&mut rng)),
+        })
+    }
 }
+
 
 impl<C: CurveAffine> Permuted<C> {
     /// Given a Lookup with input expressions, table expressions, and the permuted
@@ -290,6 +616,7 @@ impl<C: CurveAffine> Permuted<C> {
         let product_blind = Blind(C::Scalar::random(rng));
         let product_commitment = params.commit_lagrange(&z, product_blind).to_affine();
         let z = pk.vk.domain.lagrange_to_coeff(z);
+        //log::info!("lagrange_to_coeff in lookup's commit_product finished");
 
         // Hash product commitment
         transcript.write_point(product_commitment)?;
@@ -396,6 +723,8 @@ fn permute_expression_pair<'params, C: CurveAffine, P: Params<'params, C>, R: Rn
     input_expression: &Polynomial<C::Scalar, LagrangeCoeff>,
     table_expression: &Polynomial<C::Scalar, LagrangeCoeff>,
 ) -> Result<ExpressionPair<C::Scalar>, Error> {
+    //log::info!("Start permute_expression_pair!");
+
     let blinding_factors = pk.vk.cs.blinding_factors();
     let usable_rows = params.n() as usize - (blinding_factors + 1);
 
@@ -467,6 +796,7 @@ fn permute_expression_pair<'params, C: CurveAffine, P: Params<'params, C>, R: Rn
             last = Some(*a);
         }
     }
+    //log::info!("Finish permute_expression_pair!");
 
     Ok((
         domain.lagrange_from_vec(permuted_input_expression),

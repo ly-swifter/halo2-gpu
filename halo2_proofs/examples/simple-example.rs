@@ -303,6 +303,11 @@ impl<F: FieldExt> Circuit<F> for MyCircuit<F> {
 // ANCHOR_END: circuit
 
 fn main() {
+    use env_logger::Builder;
+    use log::LevelFilter;
+
+    Builder::new().filter(None, LevelFilter::Debug).parse_default_env().init();
+    
     use halo2_proofs::dev::MockProver;
     use halo2curves::pasta::Fp;
 

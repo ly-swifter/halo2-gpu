@@ -293,6 +293,11 @@ impl Circuit {
 }
 
 fn main() {
+    use env_logger::Builder;
+    use log::LevelFilter;
+
+    Builder::new().filter(None, LevelFilter::Debug).parse_default_env().init();
+
     let opts = CostOptions::parse_args_default_or_exit();
     let c = Circuit::from(opts);
     println!("{:#?}", c);

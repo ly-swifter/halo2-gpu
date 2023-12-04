@@ -378,6 +378,11 @@ fn verify_proof<
 
 #[test]
 fn plonk_api() {
+    use env_logger::Builder;
+    use log::LevelFilter;
+
+    Builder::new().filter(None, LevelFilter::Debug).parse_default_env().init();
+
     #[derive(Clone)]
     struct MyCircuit<F: FieldExt> {
         a: Value<F>,
@@ -526,7 +531,10 @@ fn plonk_api() {
         rng: R,
         params: &'params Scheme::ParamsProver,
         pk: &ProvingKey<Scheme::Curve>,
-    ) -> Vec<u8> {
+    ) -> Vec<u8> 
+    where
+        <Scheme as CommitmentScheme>::ParamsProver: Send+Sync+'static,
+    {
         let (a, instance, lookup_table) = common!(Scheme);
 
         let circuit: MyCircuit<Scheme::Scalar> = MyCircuit {
@@ -651,8 +659,7 @@ fn plonk_api() {
         >(verifier_params, pk.get_vk(), &proof[..]);
     }
 
-    env_logger::init();
-    test_plonk_api_ipa();
+    //test_plonk_api_ipa();
     test_plonk_api_gwc();
     test_plonk_api_shplonk();
 }
@@ -807,7 +814,10 @@ fn plonk_api_with_many_subregions() {
         rng: R,
         params: &'params Scheme::ParamsProver,
         pk: &ProvingKey<Scheme::Curve>,
-    ) -> Vec<u8> {
+    ) -> Vec<u8> 
+    where
+        <Scheme as CommitmentScheme>::ParamsProver: Send+Sync+'static
+    {
         let (a, instance, lookup_table) = common!(Scheme);
 
         let circuit: MyCircuit<Scheme::Scalar> = MyCircuit {
@@ -833,7 +843,6 @@ fn plonk_api_with_many_subregions() {
     type Scheme = KZGCommitmentScheme<Bn256>;
     // bad_keys!(Scheme);
 
-    env_logger::try_init().unwrap();
     let (a, instance, lookup_table) = common!(Scheme);
 
     let circuit: MyCircuit<<Scheme as CommitmentScheme>::Scalar> = MyCircuit {

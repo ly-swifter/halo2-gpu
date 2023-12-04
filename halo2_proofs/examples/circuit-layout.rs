@@ -274,6 +274,11 @@ impl<F: FieldExt> Circuit<F> for MyCircuit<F> {
 fn main() {
     // Prepare the circuit you want to render.
     // You don't need to include any witness variables.
+    use env_logger::Builder;
+    use log::LevelFilter;
+
+    Builder::new().filter(None, LevelFilter::Debug).parse_default_env().init();
+    
     let a = Fp::random(OsRng);
     let instance = Fp::one() + Fp::one();
     let lookup_table = vec![instance, a, a, Fp::zero()];

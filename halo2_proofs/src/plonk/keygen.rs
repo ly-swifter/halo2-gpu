@@ -452,18 +452,22 @@ where
     P: Params<'params, C>,
     ConcreteCircuit: Circuit<C::Scalar>,
 {
+    log::info!("Start keygen_pk_impl");
     let (domain, cs, config) = create_domain::<C, ConcreteCircuit>(params.k());
 
     if (params.n() as usize) < cs.minimum_rows() {
+        log::warn!("not_enough_rows_available");
+
         return Err(Error::not_enough_rows_available(params.k()));
     }
 
     let fixed_vec = Arc::new(vec![domain.empty_lagrange_assigned(); cs.num_fixed_columns]);
     let fixed = two_dim_vec_to_vec_of_slice!(fixed_vec);
+    log::info!("Fixed Done");
 
     let selectors_vec = Arc::new(vec![vec![false; params.n() as usize]; cs.num_selectors]);
     let selectors = two_dim_vec_to_vec_of_slice!(selectors_vec);
-
+    log::info!("selectors Done");
     let mut assembly: Assembly<C::Scalar> = Assembly {
         k: params.k(),
         fixed_vec,
@@ -479,6 +483,7 @@ where
         usable_rows: 0..params.n() as usize - (cs.blinding_factors() + 1),
         _marker: std::marker::PhantomData,
     };
+    log::info!("assembly Done");
 
     // Synthesize the circuit to obtain URS
     ConcreteCircuit::FloorPlanner::synthesize(
@@ -487,6 +492,7 @@ where
         config,
         cs.constants.clone(),
     )?;
+    log::info!("synthesize Done");
 
     debug_assert_eq!(Arc::strong_count(&assembly.fixed_vec), 1);
     debug_assert_eq!(Arc::strong_count(&assembly.selectors_vec), 1);
@@ -500,6 +506,7 @@ where
             .into_iter()
             .map(|poly| domain.lagrange_from_vec(poly)),
     );
+    log::info!("Extend fix done");
 
     let vk = match vk {
         Some(vk) => vk,
@@ -525,6 +532,7 @@ where
             )
         }
     };
+    log::info!("vk done");
 
     let fixed_polys: Vec<_> = fixed
         .iter()

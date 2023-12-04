@@ -18,6 +18,184 @@ use std::io;
 
 use super::msm::MSMKZG;
 
+use zk_gpu::threadpool::{Waiter, Worker};
+use zk_gpu::error::ZkGpuError;
+use zk_gpu::api::parallel_msm_api;
+use zk_gpu::gpulock::{LOCKER_1GPU, MSM_MEM, GpuInstance, LOCKER_4GPU, CPU_IDX};
+use zk_gpu::{GpuAffine, GpuProjective};
+use std::sync::Arc;
+
+fn commit_lagrange_cpu<
+    C,
+    F: FieldExt,
+>(
+    g_lagrange: &[C],
+    poly: &Polynomial<C::Scalar, LagrangeCoeff>,
+) -> C::Curve
+where 
+    C: CurveAffine<ScalarExt = F>,
+    C::Curve: Mul<F, Output = C::Curve> + MulAssign<F>,
+{
+    let mut scalars = Vec::with_capacity(poly.len());
+    scalars.extend(poly.iter());
+    let size = scalars.len();
+    assert!(g_lagrange.len() >= size);
+    best_multiexp(&scalars, &g_lagrange[0..size])
+}
+
+// fn commit_lagrange_cpu<
+//     E: Engine<G1Affine=C>+Debug,
+//     Scheme: CommitmentScheme,
+//     C: CurveAffine,
+//     G: Group,
+// >(
+//     g_lagrange: Arc<Vec<C>>,
+//     poly: &Polynomial<G, LagrangeCoeff>,
+// ) -> C::Curve 
+// where 
+// {
+//     let mut scalars = Vec::with_capacity(poly.len());
+//     //scalars.extend(poly.iter());
+//     let size = scalars.len();
+//     assert!(g_lagrange.len() >= size);
+//     let item: &E::G1Affine = &g_lagrange[0];
+//     best_multiexp(&scalars, &g_lagrange[0..size])
+// }
+
+
+pub fn commit_lagrange_gpu_sync<
+    C,
+    F: FieldExt,
+>(
+    g_lagrange: &[C],
+    poly: Polynomial<C::Scalar, LagrangeCoeff>,
+    k: u32,
+) -> Result<C::Curve, ZkGpuError>
+where
+    C: CurveAffine<ScalarExt = F>,
+    C::Curve: Mul<F, Output = C::Curve> + MulAssign<F>,
+
+{
+    let gpu_mem = MSM_MEM.get_mem(k);
+    let gpu_idx = LOCKER_1GPU.acquire_gpu(gpu_mem);
+    let mut gpu_ret_code: u64 = 0;
+    let mut acc = C::Curve::identity();
+    //let mut input_acc = acc.clone();
+    unsafe {
+        if gpu_idx == CPU_IDX {
+            acc = commit_lagrange_cpu(g_lagrange, &poly);
+        } else {
+            gpu_ret_code = parallel_msm_api(
+                gpu_idx, 
+                poly.values.as_ptr() as *const u64,
+                g_lagrange.as_ptr() as *const C as *const GpuAffine,
+                1<<k,  
+                &mut acc as *mut C::Curve as *mut GpuProjective,
+            );
+        }
+        
+    }
+
+    
+    LOCKER_1GPU.release_gpu(gpu_mem, gpu_idx);
+    if gpu_ret_code != 0 {
+        log::error!("GPU CALL for coeff_to_extended_part error, error code is {:?}", gpu_ret_code);
+    }
+    
+    Ok(acc)
+            
+}
+
+// pub fn commit_lagrange_gpu_sync<
+//     E: Engine<G1Affine=C>+Debug,
+//     Scheme: CommitmentScheme,
+//     C: CurveAffine,
+//     G: Group,
+// >(
+//     g_lagrange: Arc<Vec<C>>,
+//     poly: Polynomial<G, LagrangeCoeff>,
+//     k: u32,
+// ) -> Result<C::Curve, ZkGpuError>
+
+// {
+//     let gpu_mem = MSM_MEM.get_mem(k);
+//     let gpu_idx = LOCKER_1GPU.acquire_gpu(gpu_mem);
+//     let mut gpu_ret_code: u64 = 0;
+//     let mut acc :C::Curve = C::Curve::identity();
+//     //let mut input_acc = acc.clone();
+//     unsafe {
+//         if gpu_idx == CPU_IDX {
+//             acc = commit_lagrange_cpu::<E, Scheme, C, G>(g_lagrange, &poly);
+//         } else {
+//             gpu_ret_code = parallel_msm_api(
+//                 gpu_idx, 
+//                 poly.values.as_ptr() as *const u64,
+//                 g_lagrange.as_slice().as_ptr() as *const E::G1Affine as *const GpuAffine,
+//                 1<<k,  
+//                 &mut acc as *mut C::Curve as *mut GpuProjective,
+//             );
+//         }
+        
+//     }
+
+    
+//     LOCKER_1GPU.release_gpu(gpu_mem, gpu_idx);
+//     if gpu_ret_code != 0 {
+//         log::error!("GPU CALL for coeff_to_extended_part error, error code is {:?}", gpu_ret_code);
+//     }
+    
+//     Ok(acc)
+            
+// }
+
+
+pub fn commit_lagrange_gpu<
+    'a,
+    'params: 'a,
+    C,
+    F: FieldExt,
+    P: Params<'params, C>+Send+Sync+'static,
+>(
+    pool: &Worker,
+    w_params: Arc<P>,
+    poly: Polynomial<C::Scalar, LagrangeCoeff>,
+) -> Waiter<Result<C::Curve, ZkGpuError>>
+where
+    C: CurveAffine<ScalarExt = F>,
+    C::Curve: Mul<F, Output = C::Curve> + MulAssign<F>,
+{
+    pool.compute(move || 
+        {
+            commit_lagrange_gpu_sync(w_params.get_g_lagrange(), poly, w_params.k())
+            
+        })
+}
+
+// pub fn commit_lagrange_gpu<
+//     'params,
+//     E: Engine<G1Affine=C>+Debug,
+//     Scheme: CommitmentScheme<Curve = C>,
+//     C: CurveAffine,
+//     G: Group,
+// >(
+//     pool: &Worker,
+//     params: &'params Scheme::ParamsProver,
+//     poly: Polynomial<G, LagrangeCoeff>,
+// ) -> Waiter<Result<C::Curve, ZkGpuError>>
+// where
+//     E::G1Affine: SerdeCurveAffine,
+//     E::G2Affine: SerdeCurveAffine,
+// {
+//     let k = params.k();
+//     let g_lagrange: Arc<Vec<C>> = Arc::new(params.get_g_lagrange());
+//     pool.compute(move || 
+//         {
+//             commit_lagrange_gpu_sync::<E, Scheme, C, G>(g_lagrange, poly, k)
+            
+//         })
+// }
+
+
 /// These are the public parameters for the polynomial commitment scheme.
 #[derive(Debug, Clone)]
 pub struct ParamsKZG<E: Engine> {
@@ -303,6 +481,9 @@ where
         best_multiexp(&scalars, &bases[0..size])
     }
 
+    fn get_g_lagrange(&self) -> &[E::G1Affine]{
+        &self.g_lagrange
+    }
     /// Writes params to a buffer.
     fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         self.write_custom(writer, SerdeFormat::RawBytes)
@@ -380,7 +561,7 @@ mod test {
         use halo2curves::bn256::{Bn256, Fr};
 
         let params = ParamsKZG::<Bn256>::new(K);
-        let domain = EvaluationDomain::new(1, K);
+        let domain: EvaluationDomain<Fr> = EvaluationDomain::new(1, K);
 
         let mut a = domain.empty_lagrange();
 

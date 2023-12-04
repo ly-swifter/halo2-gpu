@@ -1,0 +1,268 @@
+nohup: ignoring input
+warning: cuda/fft.cu(46): warning #177-D: variable "idx" was declared but never referenced
+warning:       int idx = blockIdx.x * blockDim.x + threadIdx.x;
+warning:           ^
+warning: 
+warning: Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+warning: 
+warning: cuda/fft.cu(46): warning #177-D: variable "idx" was declared but never referenced
+warning:       int idx = blockIdx.x * blockDim.x + threadIdx.x;
+warning:           ^
+warning: 
+warning: Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+warning: 
+warning: cuda/fft.cu: In function ‘int do_parallel_fft(int, BigNum*, BigNum*, BigNum*, u_int64_t, u_int64_t, int, int, BigNum*, BigNum*)’:
+warning: cuda/fft.cu:346:7: warning: comparison of integer expressions of different signedness: ‘u_int64_t’ {aka ‘long unsigned int’} and ‘int’ [-Wsign-compare]
+warning:   346 |     if (n <= block_size) {
+warning:       |     ~~^~~~~~~~~~~~~
+warning: cuda/fft.cu:368:7: warning: comparison of integer expressions of different signedness: ‘u_int64_t’ {aka ‘long unsigned int’} and ‘int’ [-Wsign-compare]
+warning:   368 |     if (n <= block_size) {
+warning:       |     ~~^~~~~~~~~~~~~
+warning: cuda/fft.cu: In function ‘int do_msm(int, BigNum*, AffinePoint*, u_int64_t, ProjectivePoint*, u_int64_t)’:
+warning: cuda/fft.cu:469:12: warning: comparison of integer expressions of different signedness: ‘u_int64_t’ {aka ‘long unsigned int’} and ‘int’ [-Wsign-compare]
+warning:   469 |     if (length <= block_size) {
+warning:       |     ~~~~~~~^~~~~~~~~~~~~
+warning: cuda/fft.cu:450:111: warning: unused parameter ‘round’ [-Wunused-parameter]
+warning:   450 | int do_msm(int device_id, BigNum *data, AffinePoint *bases, u_int64_t length, ProjectivePoint *acc, u_int64_t round)
+warning:       |                                                                                                     ~~~~~~~~~~^~~~~
+warning: unused import: `std::io`
+ --> /home/aadmin/sda/projects/scroll-0906/zk_gpu/src/error.rs:1:5
+  |
+1 | use std::io;
+  |     ^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
+warning: denote infinite loops with `loop { ... }`
+   --> /home/aadmin/sda/projects/scroll-0906/zk_gpu/src/gpulock.rs:147:9
+    |
+147 |         while true {
+    |         ^^^^^^^^^^ help: use `loop`
+    |
+    = note: `#[warn(while_true)]` on by default
+
+warning: unused variable: `rng`
+   --> /home/aadmin/sda/projects/scroll-0906/zk_gpu/src/gpulock.rs:135:17
+    |
+135 |         let mut rng: rand::rngs::ThreadRng = rand::thread_rng();
+    |                 ^^^ help: if this is intentional, prefix it with an underscore: `_rng`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `rng`
+   --> /home/aadmin/sda/projects/scroll-0906/zk_gpu/src/gpulock.rs:137:21
+    |
+137 |             let mut rng: rand::rngs::ThreadRng = rand::thread_rng();
+    |                     ^^^ help: if this is intentional, prefix it with an underscore: `_rng`
+
+warning: variable does not need to be mutable
+   --> /home/aadmin/sda/projects/scroll-0906/zk_gpu/src/gpulock.rs:135:13
+    |
+135 |         let mut rng: rand::rngs::ThreadRng = rand::thread_rng();
+    |             ----^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` on by default
+
+warning: variable does not need to be mutable
+   --> /home/aadmin/sda/projects/scroll-0906/zk_gpu/src/gpulock.rs:137:17
+    |
+137 |             let mut rng: rand::rngs::ThreadRng = rand::thread_rng();
+    |                 ----^^^
+    |                 |
+    |                 help: remove this `mut`
+
+warning: `zk_gpu` (lib) generated 6 warnings
+warning: unused variable: `lookup`
+   --> halo2_proofs/src/plonk/evaluation.rs:664:29
+    |
+664 |                     for (n, lookup) in lookups.iter().enumerate() {
+    |                             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_lookup`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `transcript`
+   --> halo2_proofs/src/plonk/lookup/prover.rs:430:9
+    |
+430 |         transcript: &mut T,
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_transcript`
+
+warning: unused variable: `circuit_idx`
+   --> halo2_proofs/src/plonk/prover.rs:404:18
+    |
+404 |             for (circuit_idx, ((circuit, advice), instances)) in circuits
+    |                  ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_circuit_idx`
+
+warning: variable does not need to be mutable
+   --> halo2_proofs/src/plonk/evaluation.rs:462:21
+    |
+462 |                 let mut l0: Polynomial<C::Scalar, LagrangeCoeff> = l0.wait().unwrap();
+    |                     ----^^
+    |                     |
+    |                     help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` on by default
+
+warning: variable does not need to be mutable
+   --> halo2_proofs/src/plonk/prover.rs:603:18
+    |
+603 |             let (mut permuted, permuted_input_commitment, permuted_table_commitment) = waiter.wait();
+    |                  ----^^^^^^^^
+    |                  |
+    |                  help: remove this `mut`
+
+warning: associated function `fork` is never used
+  --> halo2_proofs/src/circuit/floor_planner/single_pass.rs:86:8
+   |
+86 |     fn fork(&self, sub_cs: Vec<&'a mut CS>) -> Result<Vec<Self>, Error> {
+   |        ^^^^
+   |
+   = note: `#[warn(dead_code)]` on by default
+
+warning: associated function `commit_permuted` is never used
+   --> halo2_proofs/src/plonk/lookup/prover.rs:313:29
+    |
+313 |     pub(in crate::plonk) fn commit_permuted<
+    |                             ^^^^^^^^^^^^^^^
+
+warning: function `print_type_of` is never used
+  --> halo2_proofs/src/poly/domain.rs:21:4
+   |
+21 | fn print_type_of<T>(_: &T) -> &'static str {
+   |    ^^^^^^^^^^^^^
+
+warning: unused `Result` that must be used
+   --> halo2_proofs/src/plonk/prover.rs:604:13
+    |
+604 |             lookup.write_point_permuted(permuted_input_commitment, permuted_table_commitment, transcript);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_must_use)]` on by default
+    = note: this `Result` may be an `Err` variant, which should be handled
+
+warning: `halo2_proofs` (lib) generated 9 warnings
+warning: `halo2_proofs` (lib test) generated 9 warnings (9 duplicates)
+warning: unused variable: `is_first_pass_vec`
+   --> halo2_proofs/tests/plonk_api.rs:413:21
+    |
+413 |             let mut is_first_pass_vec = vec![true; 8];
+    |                     ^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_is_first_pass_vec`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `a`
+   --> halo2_proofs/tests/plonk_api.rs:417:17
+    |
+417 |             let a: Value<Assigned<_>> = self.a.into();
+    |                 ^ help: if this is intentional, prefix it with an underscore: `_a`
+
+warning: unused variable: `a`
+   --> halo2_proofs/tests/plonk_api.rs:699:17
+    |
+699 |             let a: Value<Assigned<_>> = self.a.into();
+    |                 ^ help: if this is intentional, prefix it with an underscore: `_a`
+
+warning: variable does not need to be mutable
+   --> halo2_proofs/tests/plonk_api.rs:413:17
+    |
+413 |             let mut is_first_pass_vec = vec![true; 8];
+    |                 ----^^^^^^^^^^^^^^^^^
+    |                 |
+    |                 help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` on by default
+
+warning: function `test_plonk_api_ipa` is never used
+   --> halo2_proofs/tests/plonk_api.rs:633:8
+    |
+633 |     fn test_plonk_api_ipa() {
+    |        ^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` on by default
+
+warning: unused imports: `Coeff`, `Polynomial`
+ --> halo2_proofs/tests/zk_gpu_test.rs:5:26
+  |
+5 | use halo2_proofs::poly::{Polynomial, EvaluationDomain, kzg::commitment::{ParamsKZG, commit_lagrange_gpu}, 
+  |                          ^^^^^^^^^^
+6 |     Coeff, commitment::{ParamsProver, Blind, Params}};
+  |     ^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
+warning: unused import: `std::marker::PhantomData`
+  --> halo2_proofs/tests/zk_gpu_test.rs:14:5
+   |
+14 | use std::marker::PhantomData;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `now`
+   --> halo2_proofs/tests/zk_gpu_test.rs:112:9
+    |
+112 |     let now: Instant = Instant::now();
+    |         ^^^ help: if this is intentional, prefix it with an underscore: `_now`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `coeff_sampe`
+   --> halo2_proofs/tests/zk_gpu_test.rs:134:17
+    |
+134 |         let mut coeff_sampe = coeffs_gpu[sample_idx].lock().unwrap().clone();
+    |                 ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_coeff_sampe`
+
+warning: unused variable: `i`
+   --> halo2_proofs/tests/zk_gpu_test.rs:300:9
+    |
+300 |     for i in 0..rounds {
+    |         ^ help: if this is intentional, prefix it with an underscore: `_i`
+
+warning: variable does not need to be mutable
+  --> halo2_proofs/tests/zk_gpu_test.rs:77:13
+   |
+77 |         let mut gpu_ret_code: u64;
+   |             ----^^^^^^^^^^^^
+   |             |
+   |             help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` on by default
+
+warning: variable does not need to be mutable
+   --> halo2_proofs/tests/zk_gpu_test.rs:127:17
+    |
+127 |             let mut coeff = (0..(1 << k)).into_par_iter().map(|_| Fr::random(OsRng)).collect::<Vec<_>>();
+    |                 ----^^^^^
+    |                 |
+    |                 help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> halo2_proofs/tests/zk_gpu_test.rs:134:13
+    |
+134 |         let mut coeff_sampe = coeffs_gpu[sample_idx].lock().unwrap().clone();
+    |             ----^^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: unused variable: `rng`
+  --> halo2_proofs/tests/arithmatic_test.rs:12:9
+   |
+12 |     let rng = OsRng;
+   |         ^^^ help: if this is intentional, prefix it with an underscore: `_rng`
+   |
+   = note: `#[warn(unused_variables)]` on by default
+
+warning: `halo2_proofs` (test "plonk_api") generated 5 warnings
+warning: `halo2_proofs` (test "zk_gpu_test") generated 8 warnings
+warning: `halo2_proofs` (test "arithmatic_test") generated 1 warning
+    Finished release [optimized] target(s) in 0.08s
+     Running unittests src/lib.rs (target/release/deps/halo2-539935928e2e6608)
+     Running unittests src/lib.rs (target/release/deps/halo2_gadgets-956f9053ecc72b2f)
+     Running unittests src/lib.rs (target/release/deps/halo2_proofs-5b8594fbfc33c745)
+     Running tests/arithmatic_test.rs (target/release/deps/arithmatic_test-3457c7b589a3b74a)
+     Running tests/plonk_api.rs (target/release/deps/plonk_api-38cc03f8a9aa0d31)
+     Running tests/zk_gpu_test.rs (target/release/deps/zk_gpu_test-972f011ac507f84b)
+[2023-11-29T05:08:50Z INFO  zk_gpu_test] MSM testing started
+[2023-11-29T05:09:03Z INFO  zk_gpu_test] params has been created with k=20
+[2023-11-29T05:10:24Z INFO  zk_gpu_test] commit_lagrange cpu takes 81.569834584s
+[2023-11-29T05:11:14Z INFO  zk_gpu_test] commit_lagrange gpu takes 49.370690538s
+[2023-11-29T05:11:14Z INFO  zk_gpu_test] ALL TESTING IS DONE!

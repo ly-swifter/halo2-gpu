@@ -35,6 +35,7 @@ use crate::{
     transcript::{EncodedChallenge, TranscriptWrite},
 };
 use group::prime::PrimeCurveAffine;
+use zk_gpu::threadpool::Worker;
 
 /// This creates a proof for the provided `circuit` when given the public
 /// parameters `params` and the proving key [`ProvingKey`] that was
@@ -55,7 +56,15 @@ pub fn create_proof<
     instances: &[&[&[Scheme::Scalar]]],
     mut rng: R,
     transcript: &mut T,
-) -> Result<(), Error> {
+
+) -> Result<(), Error> 
+where
+    <Scheme as CommitmentScheme>::ParamsProver: Send+Sync+'static,
+{
+
+    let now_whole_proof: Instant = Instant::now();
+
+    log::info!("STSART PROOF GENERATION!!!!!!!!!!!!!!!!!!!!!!!!");
     for instance in instances.iter() {
         if instance.len() != pk.vk.cs.num_instance_columns {
             return Err(Error::InvalidInstances);
@@ -66,7 +75,12 @@ pub fn create_proof<
     pk.vk.hash_into(transcript)?;
 
     let domain = &pk.vk.domain;
+    let w_params  = Arc::new((*params).clone());
+    let w_domain = Arc::new(domain.clone());
+    let worker = Worker::new();
+
     let mut meta = ConstraintSystem::default();
+    log::info!("ConcreteCircuit::configure");
     let config = ConcreteCircuit::configure(&mut meta);
 
     // Selector optimizations cannot be applied here; use the ConstraintSystem
@@ -77,7 +91,8 @@ pub fn create_proof<
         pub instance_values: Vec<Polynomial<C::Scalar, LagrangeCoeff>>,
         pub instance_polys: Vec<Polynomial<C::Scalar, Coeff>>,
     }
-
+    log::info!("Initialize domian, transcript, etc...");
+    log::info!("QUERY_INSTANCE value is: {}", P::QUERY_INSTANCE);
     let instance: Vec<InstanceSingle<Scheme::Curve>> = instances
         .iter()
         .map(|instance| -> Result<InstanceSingle<Scheme::Curve>, Error> {
@@ -132,7 +147,7 @@ pub fn create_proof<
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
-
+    log::info!("finished handling instances");
     #[derive(Clone)]
     struct AdviceSingle<C: CurveAffine, B: Basis> {
         pub advice_polys: Vec<Polynomial<C::Scalar, B>>,
@@ -496,6 +511,7 @@ pub fn create_proof<
                 }
             }
 
+            log::info!("meta.challenge_phase is {:?}", meta.challenge_phase);
             for (index, phase) in meta.challenge_phase.iter().enumerate() {
                 if current_phase == *phase {
                     let existing =
@@ -509,24 +525,53 @@ pub fn create_proof<
         let challenges = (0..meta.num_challenges)
             .map(|index| challenges.remove(&index).unwrap())
             .collect::<Vec<_>>();
-
+        log::info!("challeges are {:?}", challenges);
         (advice, challenges)
     };
+    log::info!("finished committing advices");
 
     // Sample theta challenge for keeping lookup columns linearly independent
     let theta: ChallengeTheta<_> = transcript.squeeze_challenge_scalar();
 
-    let lookups: Vec<Vec<lookup::prover::Permuted<Scheme::Curve>>> = instance
+    let lookup_commit_permuted = Instant::now();
+    // let lookups: Vec<Vec<lookup::prover::Permuted<Scheme::Curve>>> = instance
+    //     .iter()
+    //     .zip(advice.iter())
+    //     .map(|(instance, advice)| -> Result<Vec<_>, Error> {
+    //         // Construct and commit to permuted values for each lookup
+    //         pk.vk
+    //             .cs
+    //             .lookups
+    //             .iter()
+    //             .map(|lookup| {
+    //                 lookup.commit_permuted(
+    //                     pk,
+    //                     params,
+    //                     domain,
+    //                     theta,
+    //                     &advice.advice_polys,
+    //                     &pk.fixed_values,
+    //                     &instance.instance_values,
+    //                     &challenges,
+    //                     &mut rng,
+    //                     transcript,
+    //                 )
+    //             })
+    //             .collect()
+    //     })
+    //     .collect::<Result<Vec<_>, _>>()?;
+
+    let lookups_waits :Vec<Vec<zk_gpu::threadpool::Waiter<(lookup::prover::Permuted<Scheme::Curve>, Scheme::Curve, Scheme::Curve)>>> = instance
         .iter()
         .zip(advice.iter())
-        .map(|(instance, advice)| -> Result<Vec<_>, Error> {
+        .map(|(instance, advice)| {
             // Construct and commit to permuted values for each lookup
             pk.vk
                 .cs
                 .lookups
                 .iter()
                 .map(|lookup| {
-                    lookup.commit_permuted(
+                    let partial = lookup.commit_permuted_partial(
                         pk,
                         params,
                         domain,
@@ -537,11 +582,32 @@ pub fn create_proof<
                         &challenges,
                         &mut rng,
                         transcript,
+                    ).unwrap();
+                    lookup::prover::commit_values_gpu(
+                        &worker,
+                        w_domain.clone(),
+                        w_params.clone(),
+                        partial,
                     )
                 })
                 .collect()
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect();
+
+    let lookups: Vec<Vec<lookup::prover::Permuted<Scheme::Curve>>> = lookups_waits.iter().map(|waits|{
+        waits.iter().zip(pk.vk
+            .cs
+            .lookups
+            .iter()).
+            map(|(waiter, lookup)|{
+            let (mut permuted, permuted_input_commitment, permuted_table_commitment) = waiter.wait();
+            lookup.write_point_permuted(permuted_input_commitment, permuted_table_commitment, transcript);
+            permuted
+        }).collect()
+
+    }).collect();
+        
+    log::info!("finished committing lookups permutation takes {:?}", lookup_commit_permuted.elapsed());
 
     // Sample beta challenge
     let beta: ChallengeBeta<_> = transcript.squeeze_challenge_scalar();
@@ -568,6 +634,7 @@ pub fn create_proof<
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
+    log::info!("finished committing permutations");
 
     let lookups: Vec<Vec<lookup::prover::Committed<Scheme::Curve>>> = lookups
         .into_iter()
@@ -580,8 +647,10 @@ pub fn create_proof<
         })
         .collect::<Result<Vec<_>, _>>()?;
 
+    log::info!("finished committing lookups commit_product");
     // Commit to the vanishing argument's random polynomial for blinding h(x_3)
     let vanishing = vanishing::Argument::commit(params, domain, &mut rng, transcript)?;
+    log::info!("finished committing vanishing ranmdom polynomial");
 
     // Obtain challenge for keeping all separate gates linearly independent
     let y: ChallengeY<_> = transcript.squeeze_challenge_scalar();
@@ -604,6 +673,7 @@ pub fn create_proof<
             },
         )
         .collect();
+    log::info!("advices from langrange to coeff");
 
     // Evaluate the h(X) polynomial
     let h_poly = pk.ev.evaluate_h(
@@ -624,10 +694,11 @@ pub fn create_proof<
         &lookups,
         &permutations,
     );
+    log::info!("finish calculate compress all gates to prepare h poly");
 
     // Construct the vanishing argument's h(X) commitments
     let vanishing = vanishing.construct(params, domain, h_poly, &mut rng, transcript)?;
-
+    log::info!("divide z poly to get h poly, and cut h into pieces and commit");
     let x: ChallengeX<_> = transcript.squeeze_challenge_scalar();
     let xn = x.pow(&[params.n() as u64, 0, 0, 0]);
 
@@ -672,7 +743,7 @@ pub fn create_proof<
             transcript.write_scalar(*eval)?;
         }
     }
-
+    log::info!("finished all {} advice poly evaluation", advice.len());
     // Compute and hash fixed evals (shared across all circuit instances)
     let fixed_evals: Vec<_> = meta
         .fixed_queries
@@ -686,17 +757,20 @@ pub fn create_proof<
     for eval in fixed_evals.iter() {
         transcript.write_scalar(*eval)?;
     }
+    log::info!("finished all {} fixed_evals poly evaluation", meta.fixed_queries.len());
 
     let vanishing = vanishing.evaluate(x, xn, domain, transcript)?;
+    log::info!("finished vanishing evaluate");
 
     // Evaluate common permutation data
     pk.permutation.evaluate(x, transcript)?;
-
+    log::info!("finished permutation evaluate");
     // Evaluate the permutations, if any, at omega^i x.
     let permutations: Vec<permutation::prover::Evaluated<Scheme::Curve>> = permutations
         .into_iter()
         .map(|permutation| -> Result<_, _> { permutation.construct().evaluate(pk, x, transcript) })
         .collect::<Result<Vec<_>, _>>()?;
+    log::info!("finished all {} permutation evaluate", permutations.len());
 
     // Evaluate the lookups, if any, at omega^i x.
     let lookups: Vec<Vec<lookup::prover::Evaluated<Scheme::Curve>>> = lookups
@@ -708,6 +782,7 @@ pub fn create_proof<
                 .collect::<Result<Vec<_>, _>>()
         })
         .collect::<Result<Vec<_>, _>>()?;
+    log::info!("finished all {} permutation evaluate", lookups.len());
 
     let instances = instance
         .iter()
@@ -756,9 +831,13 @@ pub fn create_proof<
         .chain(pk.permutation.open(x))
         // We query the h(X) polynomial at x
         .chain(vanishing.open(x));
+    log::info!("chain all queries togeter");
 
     let prover = P::new(params);
-    prover
+    let ret = prover
         .create_proof(rng, transcript, instances)
-        .map_err(|_| Error::ConstraintSystemFailure)
+        .map_err(|_| Error::ConstraintSystemFailure);
+    log::info!("Create openning proof finished, take total time is {:?}", now_whole_proof.elapsed());
+    log::info!("END PROOF GENERATION!!!!!!!!!!!!!!!!!!!!!!!!");
+    ret
 }

@@ -2,7 +2,7 @@
 //! domain that is of a suitable size for the application.
 
 use crate::{
-    arithmetic::{best_fft, parallelize, FieldExt, Group},
+    arithmetic::{best_fft, parallelize, FieldExt, Group, generate_twiddle_lookup_table, CurveAffine},
     plonk::Assigned,
 };
 
@@ -11,6 +11,115 @@ use super::{Coeff, ExtendedLagrangeCoeff, LagrangeCoeff, Polynomial, Rotation};
 use group::ff::{BatchInvert, Field, PrimeField};
 
 use std::marker::PhantomData;
+use zk_gpu::threadpool::{Waiter, Worker};
+use zk_gpu::error::ZkGpuError;
+use zk_gpu::api::{parallel_coeff_to_extended_part_api, parallel_ifft_api};
+use zk_gpu::gpulock::{LOCKER_1GPU, FFT_MEM, GpuInstance, LOCKER_4GPU, CPU_IDX};
+
+use std::sync::Arc;
+
+fn print_type_of<T>(_: &T) -> &'static str {
+    std::any::type_name::<T>()
+}
+
+pub fn lagrange_to_coeff_gpu_sync<G: Group>(
+    domain: Arc<EvaluationDomain<G>>,
+    mut a: Polynomial<G, LagrangeCoeff>,
+) -> Polynomial<G, Coeff>
+{
+    let gpu_mem = FFT_MEM.get_mem(domain.k());
+    //let mut b = a.clone();
+    let gpu_idx = LOCKER_1GPU.acquire_gpu(gpu_mem);
+    let mut gpu_ret_code: u64 = 0;
+    
+    let mut ret: Polynomial<G, Coeff> = domain.empty_coeff();
+    unsafe {
+        if gpu_idx == CPU_IDX {
+            ret = domain.lagrange_to_coeff(a.clone());
+        }
+        else {
+            gpu_ret_code = parallel_ifft_api(
+                gpu_idx, 
+                a.values.as_mut_ptr() as *mut u64,
+                &(domain.get_omega()) as *const G::Scalar as *const u64,
+                domain.get_twiddle().as_slice().as_ptr() as *const u64,  
+                1<<domain.k(), 
+                domain.k().into(), 
+                domain.get_twiddle().len() as u64,
+                &(domain.ifft_divisor) as *const G::Scalar as *const u64
+            
+            );
+        }
+    }
+    LOCKER_1GPU.release_gpu(gpu_mem, gpu_idx);
+    if gpu_ret_code != 0 {
+        log::error!("GPU CALL for lagrange_to_coeff_gpu_sync error, error code is {:?}", gpu_ret_code);
+    }
+    
+    if gpu_idx != CPU_IDX {
+        ret = Polynomial { 
+            values: a.values, 
+            _marker: PhantomData 
+        };
+    }
+    //log::info!("Complete computing coeff_to_extended_part");
+    ret
+}
+
+pub fn coeff_to_extended_part_gpu<G: Group>(
+    pool: &Worker,
+    domain: Arc<EvaluationDomain<G>>,
+    mut a: Polynomial<G, Coeff>,
+    extended_omega_factor: G::Scalar,
+) -> Waiter<Result<Polynomial<G, LagrangeCoeff>, ZkGpuError>>
+{
+    //use crate::halo2curves::bn256::G1;
+
+    pool.compute(move || 
+        {
+            //log::info!("Start computing coeff_to_extended_part");
+            let gpu_mem = FFT_MEM.get_mem(domain.k());
+            //let mut b = a.clone();
+            let gpu_idx = LOCKER_1GPU.acquire_gpu(gpu_mem);
+            let mut gpu_ret_code: u64 = 0;
+            
+            let mut ret: Polynomial<G, LagrangeCoeff> = domain.empty_lagrange();
+            unsafe {
+                if gpu_idx == CPU_IDX {
+                    ret = domain.coeff_to_extended_part(a.clone(), extended_omega_factor);
+                }
+                else {
+                    gpu_ret_code = parallel_coeff_to_extended_part_api(
+                        gpu_idx, 
+                        a.values.as_mut_ptr() as *mut u64,
+                        &(domain.get_omega()) as *const G::Scalar as *const u64,
+                        domain.get_twiddle().as_slice().as_ptr() as *const u64,  
+                        1<<domain.k(), 
+                        domain.k().into(), 
+                        domain.get_twiddle().len() as u64,
+                        &(domain.g_coset * extended_omega_factor) as *const G::Scalar as *const u64
+                    
+                    );
+                }
+            }
+
+            LOCKER_1GPU.release_gpu(gpu_mem, gpu_idx);
+            if gpu_ret_code != 0 {
+                log::error!("GPU CALL for coeff_to_extended_part error, error code is {:?}", gpu_ret_code);
+            }
+            
+            if gpu_idx != CPU_IDX {
+                ret = Polynomial { 
+                    values: a.values, 
+                    _marker: PhantomData 
+                };
+            }
+            //log::info!("Complete computing coeff_to_extended_part");
+            Ok(ret)
+            
+        })
+
+}
 
 /// This structure contains precomputed constants and other details needed for
 /// performing operations on an evaluation domain of size $2^k$ and an extended
@@ -31,6 +140,7 @@ pub struct EvaluationDomain<G: Group> {
     extended_ifft_divisor: G::Scalar,
     t_evaluations: Vec<G::Scalar>,
     barycentric_weight: G::Scalar,
+    twiddle: Vec<G::Scalar>,
 }
 
 impl<G: Group> EvaluationDomain<G> {
@@ -122,6 +232,13 @@ impl<G: Group> EvaluationDomain<G> {
             .chain(Some(&mut extended_omega_inv))
             .chain(Some(&mut omega_inv))
             .batch_invert();
+        
+        let twiddle = generate_twiddle_lookup_table(
+            omega,
+            k,
+            10,
+            true
+        );
 
         EvaluationDomain {
             n,
@@ -138,7 +255,13 @@ impl<G: Group> EvaluationDomain<G> {
             extended_ifft_divisor,
             t_evaluations,
             barycentric_weight,
+            twiddle,
         }
+    }
+
+    pub fn get_twiddle(&self) -> &Vec<G::Scalar>
+    {
+        &self.twiddle
     }
 
     /// Obtains a polynomial in Lagrange form when given a vector of Lagrange
@@ -174,12 +297,13 @@ impl<G: Group> EvaluationDomain<G> {
     ) -> Polynomial<G, ExtendedLagrangeCoeff> {
         assert_eq!(values.len(), (self.extended_len() >> self.k) as usize);
         assert_eq!(values[0].len(), self.n as usize);
-
+        log::info!("In extended_from_lagrange_vec values.len is {:?}, n is {:?}", values.len(), self.n);
         // transpose the values in parallel
         let mut transposed = vec![vec![G::group_zero(); values.len()]; self.n as usize];
         values.into_iter().enumerate().for_each(|(i, p)| {
             parallelize(&mut transposed, |transposed, start| {
                 for (transposed, p) in transposed.iter_mut().zip(p.values[start..].iter()) {
+                    //log::info!("transposed in each iter is {:?}, i is {:?}", transposed.len(), i);
                     transposed[i] = *p;
                 }
             });
@@ -347,7 +471,6 @@ impl<G: Group> EvaluationDomain<G> {
 
         self.distribute_powers(&mut a.values, self.g_coset * extended_omega_factor);
         best_fft(&mut a.values, self.omega, self.k);
-
         Polynomial {
             values: a.values,
             _marker: PhantomData,

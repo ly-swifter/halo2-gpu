@@ -370,7 +370,7 @@ impl<C: CurveAffine> VerifyingKey<C> {
     pub fn get_domain(&self) -> &EvaluationDomain<C::Scalar> {
         &self.domain
     }
-}
+} 
 
 #[derive(Clone, Copy, Debug)]
 struct Theta;

@@ -132,6 +132,8 @@ pub fn small_multiexp<C: CurveAffine>(coeffs: &[C::Scalar], bases: &[C]) -> C::C
 ///
 /// This will use multithreading if beneficial.
 pub fn best_multiexp<C: CurveAffine>(coeffs: &[C::Scalar], bases: &[C]) -> C::Curve {
+    //log::info!("!!!!!!!BEST MSM EVER!!!!!!!!!!");
+
     assert_eq!(coeffs.len(), bases.len());
 
     let num_threads = multicore::current_num_threads();
@@ -171,6 +173,8 @@ pub fn best_multiexp<C: CurveAffine>(coeffs: &[C::Scalar], bases: &[C]) -> C::Cu
 ///
 /// This will use multithreading if beneficial.
 pub fn best_fft<G: Group>(a: &mut [G], omega: G::Scalar, log_n: u32) {
+    //log::info!("!!!!!!!BEST FFT EVER!!!!!!!!!!");
+    
     let threads = multicore::current_num_threads();
     let log_split = log2_floor(threads) as usize;
     let n = a.len() as usize;
@@ -515,6 +519,7 @@ where
 pub fn parallelize<T: Send, F: Fn(&mut [T], usize) + Send + Sync + Clone>(v: &mut [T], f: F) {
     let n = v.len();
     let num_threads = multicore::current_num_threads();
+
     let mut chunk = (n as usize) / num_threads;
     if chunk < num_threads {
         chunk = 1;

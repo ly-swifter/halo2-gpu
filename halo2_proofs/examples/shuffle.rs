@@ -72,7 +72,6 @@ impl<const W: usize> MyConfig<W> {
 
             vec![q_first * (one - z)]
         });
-
         meta.create_gate("z should end with 1", |meta| {
             let q_last = meta.query_selector(q_last);
             let z = meta.query_advice(z, Rotation::cur());
@@ -324,6 +323,10 @@ fn test_prover<C: CurveAffine, const W: usize, const H: usize>(
 }
 
 fn main() {
+    use env_logger::Builder;
+    use log::LevelFilter;
+
+    Builder::new().filter(None, LevelFilter::Debug).parse_default_env().init();
     const W: usize = 4;
     const H: usize = 32;
     const K: u32 = 8;

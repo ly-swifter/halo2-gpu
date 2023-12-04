@@ -6,7 +6,7 @@ use crate::poly::Basis;
 use crate::{
     arithmetic::{eval_polynomial, parallelize, CurveAffine, FieldExt},
     poly::{
-        commitment::Params, Coeff, EvaluationDomain, ExtendedLagrangeCoeff, LagrangeCoeff,
+        commitment::Params, Coeff, EvaluationDomain, coeff_to_extended_part_gpu, ExtendedLagrangeCoeff, LagrangeCoeff,
         Polynomial, ProverQuery, Rotation,
     },
     transcript::{EncodedChallenge, TranscriptWrite},
@@ -28,6 +28,10 @@ use std::{
 
 use super::{ConstraintSystem, Expression};
 
+use zk_gpu::threadpool::{Worker, THREAD_POOL};
+use std::sync::Arc;
+
+use std::time::Instant;
 /// Return the index in the polynomial of size `isize` after rotation `rot`.
 fn get_rotation_idx(idx: usize, rot: i32, rot_scale: i32, isize: i32) -> usize {
     (((idx as i32) + (rot * rot_scale)).rem_euclid(isize)) as usize
@@ -246,7 +250,7 @@ impl<C: CurveAffine> Evaluator<C> {
             let mut evaluate_lc = |expressions: &Vec<Expression<_>>| {
                 let parts = expressions
                     .iter()
-                    .map(|expr| graph.add_expression(expr))
+                    .map(|expr|  graph.add_expression(expr) )
                     .collect();
                 graph.add_calculation(Calculation::Horner(
                     ValueSource::Constant(0),
@@ -256,8 +260,11 @@ impl<C: CurveAffine> Evaluator<C> {
             };
 
             // Input coset
+            //log::info!("lookup input_expressions are {:?}", lookup.input_expressions);
             let compressed_input_coset = evaluate_lc(&lookup.input_expressions);
             // table coset
+            //log::info!("lookup table_expressions are {:?}", lookup.table_expressions);
+
             let compressed_table_coset = evaluate_lc(&lookup.table_expressions);
             // z(\omega X) (a'(X) + \beta) (s'(X) + \gamma)
             let right_gamma = graph.add_calculation(Calculation::Add(
@@ -272,7 +279,7 @@ impl<C: CurveAffine> Evaluator<C> {
 
             ev.lookups.push(graph);
         }
-
+        //log::info!("Final lookups graphevaluator is {:?}", ev.lookups);
         ev
     }
 
@@ -290,7 +297,9 @@ impl<C: CurveAffine> Evaluator<C> {
         lookups: &[Vec<lookup::prover::Committed<C>>],
         permutations: &[permutation::prover::Committed<C>],
     ) -> Polynomial<C::ScalarExt, ExtendedLagrangeCoeff> {
+        let now_whole_evaluate: Instant = Instant::now();
         let domain = &pk.vk.domain;
+        let w_domain = Arc::new(domain.clone());
         let size = 1 << domain.k() as usize;
         let rot_scale = 1;
         let extended_omega = domain.get_extended_omega();
@@ -299,58 +308,193 @@ impl<C: CurveAffine> Evaluator<C> {
         let one = C::ScalarExt::one();
         let p = &pk.vk.cs.permutation;
         let num_parts = domain.extended_len() >> domain.k();
-
+        log::info!("domain.k is {}, domain.extended_len is {}, num_parts is {}", domain.k(), domain.extended_len(), num_parts);
+        log::info!("challenges are {:?}", challenges);
         // Calculate the quotient polynomial for each part
         let mut current_extended_omega = one;
+        //log::info!("Self custom gate's are: {:?}", self.custom_gates);
+        let worker = Worker::new();
+
         let value_parts: Vec<Polynomial<C::ScalarExt, LagrangeCoeff>> = (0..num_parts)
             .map(|_| {
-                let fixed: Vec<Polynomial<C::ScalarExt, LagrangeCoeff>> = pk
-                    .fixed_polys
-                    .iter()
-                    .map(|p| domain.coeff_to_extended_part(p.clone(), current_extended_omega))
-                    .collect();
-                let fixed = &fixed[..];
-                let l0 = domain.coeff_to_extended_part(pk.l0.clone(), current_extended_omega);
+                let now = Instant::now();
+                let mut fixed: Vec<zk_gpu::threadpool::Waiter<Result<Polynomial<C::Scalar, LagrangeCoeff>, zk_gpu::error::ZkGpuError>>> = Vec::new();
+                
+                pk
+                .fixed_polys
+                .iter()
+                .for_each(|p| fixed.push(coeff_to_extended_part_gpu(&worker, w_domain.clone(), p.clone(), current_extended_omega)));
+                
+                //log::info!("SENDER FINISHED, receiver length is {:?}!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!", fixed.len());
+                // let fixed: Vec<Polynomial<C::ScalarExt, LagrangeCoeff>> = pk
+                //     .fixed_polys
+                //     .iter()
+                //     .map(|p| domain.coeff_to_extended_part(p.clone(), current_extended_omega))
+                //     .collect();
+                
+                
+                //log::info!("RECEIVER FINISHED!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+                //let l0 = domain.coeff_to_extended_part(pk.l0.clone(), current_extended_omega);
+                let l0 = coeff_to_extended_part_gpu(&worker, w_domain.clone(), pk.l0.clone(), current_extended_omega);
                 let l_last =
-                    domain.coeff_to_extended_part(pk.l_last.clone(), current_extended_omega);
+                    coeff_to_extended_part_gpu(&worker, w_domain.clone(), pk.l_last.clone(), current_extended_omega);
                 let l_active_row =
-                    domain.coeff_to_extended_part(pk.l_active_row.clone(), current_extended_omega);
+                    coeff_to_extended_part_gpu(&worker, w_domain.clone(), pk.l_active_row.clone(), current_extended_omega);
+
+                
+                // let l_last =
+                //     domain.coeff_to_extended_part(pk.l_last.clone(), current_extended_omega);
+                // let l_active_row =
+                //     domain.coeff_to_extended_part(pk.l_active_row.clone(), current_extended_omega);
 
                 // Calculate the advice and instance cosets
-                let advice: Vec<Vec<Polynomial<C::Scalar, LagrangeCoeff>>> = advice_polys
-                    .iter()
-                    .map(|advice_polys| {
-                        advice_polys
-                            .iter()
-                            .map(|poly| {
-                                domain.coeff_to_extended_part(poly.clone(), current_extended_omega)
-                            })
-                            .collect()
-                    })
-                    .collect();
-                let instance: Vec<Vec<Polynomial<C::Scalar, LagrangeCoeff>>> = instance_polys
-                    .iter()
-                    .map(|instance_polys| {
-                        instance_polys
-                            .iter()
-                            .map(|poly| {
-                                domain.coeff_to_extended_part(poly.clone(), current_extended_omega)
-                            })
-                            .collect()
-                    })
-                    .collect();
+                let mut advice: Vec<Vec<zk_gpu::threadpool::Waiter<Result<Polynomial<C::Scalar, LagrangeCoeff>, zk_gpu::error::ZkGpuError>>>> = Vec::new();
 
+                advice_polys.iter().for_each(|advice_polys| {
+                    advice.push(advice_polys.iter().map(|poly| {
+                        coeff_to_extended_part_gpu(&worker, w_domain.clone(), poly.clone(), current_extended_omega)
+                    }).collect::<Vec<zk_gpu::threadpool::Waiter<Result<Polynomial<C::Scalar, LagrangeCoeff>, zk_gpu::error::ZkGpuError>>>>());
+                });
+
+                // let advice: Vec<Vec<Polynomial<C::Scalar, LagrangeCoeff>>> = advice_polys
+                //     .iter()
+                //     .map(|advice_polys| {
+                //         advice_polys
+                //             .iter()
+                //             .map(|poly| {
+                //                 domain.coeff_to_extended_part(poly.clone(), current_extended_omega)
+                //             })
+                //             .collect()
+                //     })
+                //     .collect();
+                let mut instance: Vec<Vec<zk_gpu::threadpool::Waiter<Result<Polynomial<C::Scalar, LagrangeCoeff>, zk_gpu::error::ZkGpuError>>>> = Vec::new();
+
+                // let instance: Vec<Vec<Polynomial<C::Scalar, LagrangeCoeff>>> = instance_polys
+                //     .iter()
+                //     .map(|instance_polys| {
+                //         instance_polys
+                //             .iter()
+                //             .map(|poly| {
+                //                 domain.coeff_to_extended_part(poly.clone(), current_extended_omega)
+                //             })
+                //             .collect()
+                //     })
+                //     .collect();
+                
+                instance_polys.iter().for_each(|instance_polys| {
+                        instance.push(instance_polys.iter().map(|poly| {
+                            coeff_to_extended_part_gpu(&worker, w_domain.clone(), poly.clone(), current_extended_omega)
+                    }).collect::<Vec<zk_gpu::threadpool::Waiter<Result<Polynomial<C::Scalar, LagrangeCoeff>, zk_gpu::error::ZkGpuError>>>>());
+                });
+
+                let permutation_cosets_wait: Vec<zk_gpu::threadpool::Waiter<Result<Polynomial<C::Scalar, LagrangeCoeff>, 
+                            zk_gpu::error::ZkGpuError>>,
+                        > = pk.permutation
+                            .polys
+                            .iter()
+                            .map(|p| {
+                                coeff_to_extended_part_gpu( &worker,
+                                    w_domain.clone(), 
+                                    p.clone(),
+                                    current_extended_omega,
+                                )
+                            })
+                            .collect();
+                        
+                let mut permutation_product_cosets: Vec<Vec<zk_gpu::threadpool::Waiter<Result<Polynomial<C::Scalar, LagrangeCoeff>, 
+                zk_gpu::error::ZkGpuError>>>> = Vec::new();
+
+                for permutation in permutations {
+                    let sets = &permutation.sets;
+                    permutation_product_cosets.push(sets
+                    .iter()
+                    .map(|set| 
+                        coeff_to_extended_part_gpu( &worker,
+                            w_domain.clone(), 
+                                                    set.permutation_product_poly.clone(),
+                                current_extended_omega,
+                        )).collect());
+                };
+                
+                let mut permutation_cosets_wait_done = false;
+                let mut permutation_cosets: Vec<Polynomial<C::ScalarExt, LagrangeCoeff>> = Vec::new();
+
+
+                let mut product_cosets:  Vec<Vec<zk_gpu::threadpool::Waiter<Result<Polynomial<C::Scalar, LagrangeCoeff>, zk_gpu::error::ZkGpuError>>>> = Vec::new();
+                let mut permuted_input_cosets:  Vec<Vec<zk_gpu::threadpool::Waiter<Result<Polynomial<C::Scalar, LagrangeCoeff>, zk_gpu::error::ZkGpuError>>>> = Vec::new();
+                let mut permuted_table_cosets:  Vec<Vec<zk_gpu::threadpool::Waiter<Result<Polynomial<C::Scalar, LagrangeCoeff>, zk_gpu::error::ZkGpuError>>>> = Vec::new();
+
+
+                for lookups in lookups.iter() {
+                    product_cosets.push(lookups.iter().map(|lookup| {
+                        coeff_to_extended_part_gpu(
+                        &worker,
+                        w_domain.clone(), 
+                        lookup.product_poly.clone(),
+                        current_extended_omega,
+                    )}).collect());
+
+                    permuted_input_cosets.push(lookups.iter().map(|lookup| {
+                        coeff_to_extended_part_gpu(
+                        &worker,
+                        w_domain.clone(), 
+                        lookup.permuted_input_poly.clone(),
+                        current_extended_omega,
+                    )}).collect());
+
+                    permuted_table_cosets.push(lookups.iter().map(|lookup| {
+                        coeff_to_extended_part_gpu(
+                        &worker,
+                        w_domain.clone(), 
+                        lookup.permuted_table_poly.clone(),
+                        current_extended_omega,
+                    )}).collect());
+                }
+                
+                log::info!(
+                    "finish sending tasks to GPU, elapsed: {:?}",
+                    now.elapsed()
+                );
+
+                //WAIT!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+                let fixed: Vec<Polynomial<C::Scalar, LagrangeCoeff>> = fixed.iter().map(|fix| fix.wait().unwrap()).collect();
+                let fixed = &fixed[..];
+                let mut l0: Polynomial<C::Scalar, LagrangeCoeff> = l0.wait().unwrap();
+                let l_last: Polynomial<C::Scalar, LagrangeCoeff> = l_last.wait().unwrap();
+                let l_active_row: Polynomial<C::Scalar, LagrangeCoeff> = l_active_row.wait().unwrap();
+         
                 let mut values = domain.empty_lagrange();
-
+                
                 // Core expression evaluations
                 let num_threads = multicore::current_num_threads();
-                for (((advice, instance), lookups), permutation) in advice
+                log::info!("CPU tasks kicked off, {} of threads are used in evaluation, elapsed: {:?}", num_threads, now.elapsed());
+                for (((((((advice, instance), lookups), permutation), permutation_product_cosets), product_cosets), permuted_input_cosets), permuted_table_cosets) in advice
                     .iter()
                     .zip(instance.iter())
                     .zip(lookups.iter())
                     .zip(permutations.iter())
+                    .zip(permutation_product_cosets.iter())
+                    .zip(product_cosets.iter())
+                    .zip(permuted_input_cosets.iter())
+                    .zip(permuted_table_cosets.iter())
                 {
                     // Custom gates
+                    let now: Instant = Instant::now();
+
+                    let advice: Vec<Polynomial<C::ScalarExt, LagrangeCoeff>> = advice.iter().map(|advice| 
+                            advice.wait().unwrap()
+                        ).collect();
+                    let advice  = &advice[..];
+                    
+                    log::info!("Wait advice jobs are completed, elapsed: {:?}", now.elapsed());
+
+                    let instance: Vec<Polynomial<C::Scalar, LagrangeCoeff>> = instance.iter().map(|instance| 
+                           instance.wait().unwrap()
+                        ).collect();  
+                    let instance = &instance[..];
+
+                    log::info!("Wait instance jobs are completed, elapsed: {:?}", now.elapsed());
+
                     multicore::scope(|scope| {
                         let chunk_size = (size + num_threads - 1) / num_threads;
                         for (thread_idx, values) in values.chunks_mut(chunk_size).enumerate() {
@@ -378,39 +522,58 @@ impl<C: CurveAffine> Evaluator<C> {
                             });
                         }
                     });
+                    drop(advice);
+                    drop(instance);
+                    log::info!("custom gate evaluate is done elapsed: {:?}", now.elapsed());
 
                     // Permutations
+                    let now: Instant = Instant::now();
                     let sets = &permutation.sets;
+
                     if !sets.is_empty() {
                         let blinding_factors = pk.vk.cs.blinding_factors();
                         let last_rotation = Rotation(-((blinding_factors + 1) as i32));
                         let chunk_len = pk.vk.cs.degree() - 2;
                         let delta_start = beta * &C::Scalar::ZETA;
 
-                        let permutation_product_cosets: Vec<
-                            Polynomial<C::ScalarExt, LagrangeCoeff>,
-                        > = sets
-                            .iter()
-                            .map(|set| {
-                                domain.coeff_to_extended_part(
-                                    set.permutation_product_poly.clone(),
-                                    current_extended_omega,
-                                )
-                            })
-                            .collect();
-                        let permutation_cosets: Vec<Polynomial<C::ScalarExt, LagrangeCoeff>> = pk
-                            .permutation
-                            .polys
-                            .iter()
-                            .map(|p| {
-                                domain.coeff_to_extended_part(p.clone(), current_extended_omega)
-                            })
-                            .collect();
+                        // let permutation_product_cosets: Vec<
+                        //     Polynomial<C::ScalarExt, LagrangeCoeff>,
+                        // > = sets
+                        //     .iter()
+                        //     .map(|set| {
+                        //         domain.coeff_to_extended_part(
+                        //             set.permutation_product_poly.clone(),
+                        //             current_extended_omega,
+                        //         )
+                        //     })
+                        //     .collect();
+                        
+                        // let permutation_cosets: Vec<Polynomial<C::ScalarExt, LagrangeCoeff>> = pk
+                        //     .permutation
+                        //     .polys
+                        //     .iter()
+                        //     .map(|p| {
+                        //         domain.coeff_to_extended_part(p.clone(), current_extended_omega)
+                        //     })
+                        //     .collect();
+
+                        
+
+                        let permutation_product_cosets: Vec<Polynomial<C::ScalarExt, LagrangeCoeff>> = permutation_product_cosets.iter().map(|set| set.wait().unwrap()).collect();
+                        log::info!("Wait permutation_product_cosets jobs are completed, elapsed: {:?}", now.elapsed());
 
                         let first_set_permutation_product_coset =
                             permutation_product_cosets.first().unwrap();
                         let last_set_permutation_product_coset =
                             permutation_product_cosets.last().unwrap();
+
+                        if ! permutation_cosets_wait_done {
+                            for set in permutation_cosets_wait.iter() {
+                                permutation_cosets.push(set.wait().unwrap());
+                                permutation_cosets_wait_done = true;
+                            }
+                        }
+                        log::info!("Wait permutation_cosets_wait_done jobs are completed, elapsed: {:?}", now.elapsed());
 
                         // Permutation constraints
                         parallelize(&mut values, |values, start| {
@@ -490,26 +653,40 @@ impl<C: CurveAffine> Evaluator<C> {
                                 beta_term *= &omega;
                             }
                         });
+                        drop(permutation_product_cosets);
                     }
+                    
+                    log::info!("permutation evaluate is done elapsed: {:?}", now.elapsed());
 
                     // Lookups
+                    let now: Instant = Instant::now();
+
                     for (n, lookup) in lookups.iter().enumerate() {
                         // Polynomials required for this lookup.
                         // Calculated here so these only have to be kept in memory for the short time
                         // they are actually needed.
-                        let product_coset = pk.vk.domain.coeff_to_extended_part(
-                            lookup.product_poly.clone(),
-                            current_extended_omega,
-                        );
-                        let permuted_input_coset = pk.vk.domain.coeff_to_extended_part(
-                            lookup.permuted_input_poly.clone(),
-                            current_extended_omega,
-                        );
-                        let permuted_table_coset = pk.vk.domain.coeff_to_extended_part(
-                            lookup.permuted_table_poly.clone(),
-                            current_extended_omega,
-                        );
+                        // let product_coset = pk.vk.domain.coeff_to_extended_part(
+                        //     lookup.product_poly.clone(),
+                        //     current_extended_omega,
+                        // );
+                        
+                        // let permuted_input_coset = pk.vk.domain.coeff_to_extended_part(
+                        //     lookup.permuted_input_poly.clone(),
+                        //     current_extended_omega,
+                        // );
+                        
+                        // let permuted_table_coset = pk.vk.domain.coeff_to_extended_part(
+                        //     lookup.permuted_table_poly.clone(),
+                        //     current_extended_omega,
+                        // );
 
+                        
+
+                        let product_coset = product_cosets[n].wait().unwrap();
+                        let permuted_input_coset = permuted_input_cosets[n].wait().unwrap();
+                        let permuted_table_coset = permuted_table_cosets[n].wait().unwrap();
+
+                        //log::info!("GPU part of lookup is done for loop {:?}", n);
                         // Lookup constraints
                         parallelize(&mut values, |values, start| {
                             let lookup_evaluator = &self.lookups[n];
@@ -571,13 +748,30 @@ impl<C: CurveAffine> Evaluator<C> {
                                         * l_active_row[idx]);
                             }
                         });
+                        //log::info!("CPU part of lookup is done for loop {:?}", n);
+                        drop(product_coset);
+                        drop(permuted_input_coset);
+                        drop(permuted_table_coset);
+
                     }
+                    
+                    log::info!("lookup evaluate is done elapsed: {:?}", now.elapsed());
+
                 }
+                drop(fixed);
+                drop(advice);
+                drop(instance);
+                drop(permutation_cosets_wait);
+                drop(permutation_product_cosets);
+                drop(permutation_cosets);
+                drop(product_cosets);
+                drop(permuted_input_cosets);
+                drop(permuted_table_cosets);
                 current_extended_omega *= extended_omega;
                 values
             })
             .collect();
-
+        log::info!("whole_evaluate elapsed {:?}", now_whole_evaluate.elapsed());
         domain.extended_from_lagrange_vec(value_parts)
     }
 }
@@ -601,6 +795,7 @@ impl<C: CurveAffine> Default for GraphEvaluator<C> {
 impl<C: CurveAffine> GraphEvaluator<C> {
     /// Adds a rotation
     fn add_rotation(&mut self, rotation: &Rotation) -> usize {
+        //log::info!("To be added rotations are {:?}", rotation);
         let position = self.rotations.iter().position(|&c| c == rotation.0);
         match position {
             Some(pos) => pos,

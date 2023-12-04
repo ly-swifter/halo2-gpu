@@ -127,6 +127,11 @@ impl Circuit<Fr> for StandardPlonk {
 }
 
 fn main() {
+    use env_logger::Builder;
+    use log::LevelFilter;
+
+    Builder::new().filter(None, LevelFilter::Debug).parse_default_env().init();
+    
     let k = 4;
     let circuit = StandardPlonk(Fr::random(OsRng));
     let params = ParamsKZG::<Bn256>::setup(k, OsRng);

@@ -76,7 +76,7 @@ pub(super) fn generate_mds<F: FieldExt, const T: usize>(
     // We adapt this to the positive Cauchy formulation by negating ys.
     let mut mds_inv = [[F::zero(); T]; T];
     let l = |xs: &[F], j, x: F| {
-        let x_j = xs[j];
+        let x_j :F = xs[j];
         xs.iter().enumerate().fold(F::one(), |acc, (m, x_m)| {
             if m == j {
                 acc

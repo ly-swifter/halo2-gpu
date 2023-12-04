@@ -67,6 +67,10 @@ pub trait Params<'params, C: CurveAffine>: Sized + Clone {
         r: Blind<C::ScalarExt>,
     ) -> C::CurveExt;
 
+    fn get_g_lagrange(&self) -> &[C]{
+        panic!("The params implementation doesn't support get_g_langrange!");
+    }
+
     /// Writes params to a buffer.
     fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()>;
 

@@ -169,6 +169,8 @@ impl Argument {
             let permutation_product_commitment_projective = params.commit_lagrange(&z, blind);
             let permutation_product_blind = blind;
             let z = domain.lagrange_to_coeff(z);
+            //log::info!("lagrange_to_coeff in permutations's commit finished");
+
             let permutation_product_poly = z.clone();
 
             let permutation_product_commitment =
